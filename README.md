@@ -1,398 +1,341 @@
+![Work In Progress](https://img.shields.io/badge/status-🚧%20WIP-orange)
+
 # Unified LLM Interface
 
-A **provider-agnostic LLM interface** that provides seamless switching between different LLM providers while maintaining a consistent API surface. Currently supports OpenAI-compatible endpoints (vLLM, Ollama, etc.).
 
-## 🚀 Features
+A unified interface for Large Language Models (LLMs) supporting multiple providers, with tool integration, reasoning extraction, and flexible configuration. **Pure interface design**: providers return tool calls as structured data without automatic execution - applications maintain full control over tool execution and conversation flow.
 
-- **Provider Agnostic**: Same interface works with any provider
-- **Easy Provider Switching**: Change providers by just importing different classes
-- **Tool Calling**: Automatic function introspection and execution
-- **Streaming Support**: Both synchronous and streaming chat completions
-- **Multimodal**: Support for text and image inputs
-- **Type Safe**: Full type hints and Pydantic models
-- **Extensible**: Easy to add new providers
+## 🌟 Key Features
 
-## 📦 Installation
+- **Multi-Provider Support**: OpenAI-compatible endpoints (vLLM, Ollama, etc.), with extensible architecture for AWS Bedrock and others
+- **Pure Interface Design**: Tool calls returned as data, no automatic execution - applications control everything
+- **Comprehensive Tool Integration**: Optional ToolExecutor utility for safe tool execution with error handling
+- **Advanced Reasoning Support**: Extract reasoning content from provider responses (e.g., OpenAI o1, pattern-based extraction)
+- **Flexible Configuration**: Constructor-only parameters with automatic common/provider-specific separation
+- **Streaming Support**: Real-time response streaming with tool call support
+- **Rich Metadata**: Extensible metadata system for provider-specific information
+- **Modern HTTP Client**: Built on httpx with connection management and context manager support
+
+## 🏗️ Architecture Principles
+
+### 1. Pure Interface Design
+Providers are **pure interfaces** that translate between formats and return structured data. They do **NOT**:
+- Execute tools automatically
+- Manage conversation state
+- Make tool execution decisions
+
+### 2. Separation of Concerns
+- **Providers**: Format translation, API communication, schema generation
+- **ToolExecutor**: Optional safe tool execution with error handling
+- **Applications**: Conversation management, tool execution decisions, orchestration
+
+### 3. Constructor-Only Configuration
+All parameters (common and provider-specific) are set once during initialization, eliminating runtime parameter confusion.
+
+## 🚀 Quick Start
+
+### Basic Installation
 
 ```bash
-pip install -e .
+pip install unified-llm
 ```
 
-## 🔧 Quick Start
+### Development Installation
+
+```bash
+git clone <repository-url>
+cd unified-llm
+uv sync --dev
+```
 
 ### Basic Usage
 
 ```python
-from unified_llm import OpenAILike
+from unified_llm import OpenAILike, ToolExecutor
 
-# Initialize provider with all parameters at once
-provider = OpenAILike(
-    model_id="meta-llama/Llama-3.1-8B-Instruct",
-    # Connection settings
-    base_url="http://localhost:8000/v1",
-    api_key="your-api-key",
-    # Common parameters
-    temperature=0.7,
-    max_tokens=1000,
-    top_p=0.9,
-    # Provider-specific parameters (vLLM/Ollama)
-    top_k=40,
-    repetition_penalty=1.1,
-    min_p=0.05
-)
-
-# Basic chat - uses configured parameters
-response = provider.chat([
-    {"role": "user", "content": "Hello, world!"}
-])
-print(response.content)
-
-# Clean up when done (or use context manager)
-provider.close()
-
-# Or use as context manager (recommended)
-with OpenAILike(
-    model_id="model-name", 
-    base_url="http://localhost:8000/v1",
-    temperature=0.8,
-    top_k=50
-) as provider:
-    response = provider.chat([{"role": "user", "content": "Hello!"}])
-    print(response.content)
-```
-
-### Parameter Configuration
-
-Set all parameters once during initialization. The framework automatically separates common parameters from provider-specific ones:
-
-```python
-provider = OpenAILike(
-    model_id="llama-3.1-8b",
-    
-    # Connection parameters
-    base_url="http://localhost:8000/v1",
-    api_key="your-key",
-    timeout=30,
-    
-    # Common parameters (work across providers)
-    temperature=0.7,        # Randomness
-    max_tokens=1000,        # Response length
-    top_p=0.9,             # Nucleus sampling
-    frequency_penalty=0.0,  # Reduce repetition
-    presence_penalty=0.0,   # Encourage new topics
-    
-    # Provider-specific parameters (vLLM/Ollama)
-    top_k=40,              # Top-K sampling
-    repetition_penalty=1.1, # Alternative repetition control
-    min_p=0.05,            # Minimum probability threshold
-    typical_p=1.0,         # Typical sampling
-    mirostat=0,            # Mirostat sampling mode
-    
-    # Any other provider-specific parameters
-    custom_param="value"
-)
-
-# All chat calls use these configured parameters
-response = provider.chat(messages)
-```
-
-#### Parameter Categories
-
-- **Common**: `temperature`, `max_tokens`, `top_p`, `frequency_penalty`, `presence_penalty`, `stop`, `seed`
-- **vLLM/Ollama**: `top_k`, `repetition_penalty`, `min_p`, `typical_p`, `mirostat`, etc.
-- **Connection**: `base_url`, `api_key`, `timeout`
-
-### Tool Calling
-
-```python
+# Define tools
 def get_weather(location: str) -> str:
-    """Get current weather for a location."""
+    """Get weather for a location."""
     return f"Weather in {location}: sunny, 22°C"
 
 def calculate(expression: str) -> float:
-    """Evaluate a mathematical expression."""
+    """Calculate mathematical expression."""
     return eval(expression)
 
-# Initialize with tools
+# Initialize provider (pure interface)
 provider = OpenAILike(
-    model_id="meta-llama/Llama-3.1-8B-Instruct",
-    tools=[get_weather, calculate],
-    base_url="http://localhost:8000/v1"
+    model_id="qwen3:4b",
+    base_url="http://localhost:11434/v1",
+    api_key="dummy-key",
+    tools=[get_weather, calculate],  # For schema generation only
+    temperature=0.7,
+    max_tokens=1000
 )
 
-# The framework automatically handles tool execution
-response = provider.chat([
-    {"role": "user", "content": "What's the weather in Paris and what's 15 * 23?"}
-])
-print(response.content)
+# Initialize tool executor (optional utility)
+tool_executor = ToolExecutor(tools=[get_weather, calculate])
+
+# Chat with pure interface
+messages = [
+    {"role": "user", "content": "What's the weather in Tokyo and what's 5*7?"}
+]
+
+response = provider.chat(messages)
+print(f"Assistant: {response.content}")
+
+# Application controls tool execution
+if response.tool_calls:
+    print(f"Tool calls requested: {len(response.tool_calls)}")
+    
+    # Add assistant message
+    messages.append({
+        "role": "assistant",
+        "content": response.content,
+        "tool_calls": response.tool_calls
+    })
+    
+    # Execute tools (application decision)
+    for tool_call in response.tool_calls:
+        result = tool_executor.execute(tool_call)
+        print(f"Executed {tool_call['name']}: {result}")
+        
+        # Add tool result
+        messages.append({
+            "role": "tool",
+            "content": result,
+            "tool_call_id": tool_call["id"]
+        })
+    
+    # Continue conversation
+    final_response = provider.chat(messages)
+    print(f"Final response: {final_response.content}")
 ```
 
-### Streaming
+## 📚 Advanced Usage
+
+### Tool Call Validation
 
 ```python
-for chunk in provider.chat_stream([
-    {"role": "user", "content": "Tell me a story"}
-]):
-    if chunk.delta:
-        print(chunk.delta, end="", flush=True)
-    if chunk.is_complete:
-        break
+# Validate tool calls before execution
+errors = tool_executor.validate_tool_call(tool_call)
+if errors:
+    print(f"Validation errors: {errors}")
+else:
+    result = tool_executor.execute(tool_call)
+```
+
+### Selective Tool Execution
+
+```python
+for tool_call in response.tool_calls:
+    # Application logic for tool safety
+    if tool_call['name'] in ['safe_tool1', 'safe_tool2']:
+        result = tool_executor.execute(tool_call)
+        # Add to conversation...
+    else:
+        # Reject unsafe tools
+        messages.append({
+            "role": "tool",
+            "content": f"Tool '{tool_call['name']}' execution denied",
+            "tool_call_id": tool_call["id"]
+        })
+```
+
+### Batch Tool Execution
+
+```python
+# Execute multiple tools at once
+tool_results = tool_executor.execute_all(response.tool_calls)
+
+# Add all results to conversation
+messages.extend(tool_results)
 ```
 
 ### Reasoning Support
 
-Enable reasoning content extraction to see the model's thinking process:
-
 ```python
-# Standard response
-response = provider.chat([
-    {"role": "user", "content": "What's 2+2?"}
-], enable_reasoning=False)
-print(response.content)  # "4"
-
-# With reasoning extraction
-response = provider.chat([
-    {"role": "user", "content": "What's 2+2?"}
-], enable_reasoning=True)
+response = provider.chat(messages, enable_reasoning=True)
 
 if response.reasoning_content:
-    print(f"Thinking: {response.reasoning_content}")
-    
-if response.reasoning_tokens:
+    print(f"Reasoning: {response.reasoning_content}")
     print(f"Reasoning tokens: {response.reasoning_tokens}")
-    
-print(f"Answer: {response.content}")
+
+print(f"Final answer: {response.content}")
 ```
 
-#### Streaming with Reasoning
+### Streaming with Tool Calls
 
 ```python
-for chunk in provider.chat_stream([
-    {"role": "user", "content": "Solve 2x + 5 = 15"}
-], enable_reasoning=True):
-    
-    # Show reasoning process
-    if chunk.reasoning_delta:
-        print(chunk.reasoning_delta, end="", flush=True)
-    
-    # Indicate when reasoning is complete
-    if chunk.is_reasoning_complete:
-        print("\n--- Reasoning Complete ---")
-    
-    # Show final response
+for chunk in provider.chat_stream(messages):
     if chunk.delta:
         print(chunk.delta, end="", flush=True)
+    
+    # Tool calls in streaming (final chunk)
+    if chunk.tool_calls:
+        # Handle tool calls...
+        pass
     
     if chunk.is_complete:
         break
 ```
 
-### Metadata Access
-
-Access provider-specific metadata for usage tracking, debugging, and analytics:
+### Flexible Configuration
 
 ```python
-response = provider.chat([
-    {"role": "user", "content": "Hello!"}
-])
-
-# Access usage information
-if 'usage' in response.metadata:
-    usage = response.metadata['usage']
-    print(f"Input tokens: {usage.get('prompt_tokens', 0)}")
-    print(f"Output tokens: {usage.get('completion_tokens', 0)}")
-    print(f"Total tokens: {usage.get('total_tokens', 0)}")
-
-# Provider information
-print(f"Provider: {response.metadata.get('provider')}")
-print(f"Model: {response.metadata.get('model')}")
-print(f"Finish reason: {response.metadata.get('finish_reason')}")
-
-# Response ID for tracking
-print(f"Response ID: {response.metadata.get('response_id')}")
-```
-
-#### Common Metadata Fields
-
-- **`usage`**: Token usage statistics (`prompt_tokens`, `completion_tokens`, `total_tokens`)
-- **`model`**: Actual model used for the response
-- **`provider`**: Provider identifier (e.g., `"openai_like"`)
-- **`endpoint`**: API endpoint used
-- **`finish_reason`**: Why the response ended (`"stop"`, `"length"`, `"tool_calls"`, etc.)
-- **`response_id`**: Unique identifier for the response
-- **`created`**: Timestamp of response creation
-
-### Multimodal
-
-```python
-import base64
-
-with open("image.jpg", "rb") as f:
-    image_data = base64.b64encode(f.read()).decode()
-
-response = provider.chat([
-    {
-        "role": "user",
-        "content": [
-            {"type": "text", "text": "What's in this image?"},
-            {"type": "image", "image_data": image_data}
-        ]
-    }
-])
-```
-
-## 🌐 Supported Providers
-
-### OpenAI-Compatible Endpoints
-
-Works with any OpenAI-compatible API endpoint:
-
-- **vLLM**: High-performance inference engine
-- **Ollama**: Local LLM runner
-- **Text Generation Inference**: Hugging Face's TGI
-- **LM Studio**: Local inference server
-- **Any OpenAI-compatible API**
-
-#### vLLM Setup Example
-
-```bash
-# Install vLLM
-pip install vllm
-
-# Start vLLM server
-python -m vllm.entrypoints.openai.api_server \
-  --model meta-llama/Llama-3.1-8B-Instruct \
-  --port 8000
-```
-
-#### Environment Variables
-
-```bash
-export OPENAI_LIKE_BASE_URL="http://localhost:8000/v1"
-export OPENAI_LIKE_API_KEY="dummy-key"
-```
-
-## 🛠️ Configuration
-
-### Direct Configuration
-
-```python
+# All parameters set during initialization
 provider = OpenAILike(
-    model_id="model-name",
-    base_url="http://localhost:8000/v1",
-    api_key="your-key",
+    model_id="qwen3:4b",
+    base_url="http://localhost:11434/v1",
+    # Common parameters
     temperature=0.7,
     max_tokens=1000,
-    timeout=30
+    top_p=0.9,
+    # Provider-specific parameters
+    top_k=40,
+    repetition_penalty=1.1,
+    min_p=0.05,
+    # Custom parameters
+    custom_provider_param="value"
+)
+
+# Parameters are automatically separated
+print(provider.common_params)    # Common parameters
+print(provider.provider_params)  # Provider-specific parameters
+```
+
+### Context Management
+
+```python
+# Automatic resource cleanup
+with OpenAILike(model_id="model", **config) as provider:
+    response = provider.chat(messages)
+    # Connection automatically closed
+```
+
+### Metadata Access
+
+```python
+response = provider.chat(messages)
+
+# Access provider-specific metadata
+if response.metadata:
+    usage = response.metadata.get('usage', {})
+    print(f"Tokens used: {usage}")
+    
+    model_info = response.metadata.get('model')
+    finish_reason = response.metadata.get('finish_reason')
+```
+
+## 🔧 Tool Integration
+
+The interface supports flexible tool integration through:
+
+1. **Schema Generation**: Tools provided to providers for OpenAI-compatible schema generation
+2. **Pure Interface**: Tool calls returned as structured data, not executed
+3. **Optional Execution**: ToolExecutor utility for safe execution when needed
+4. **Application Control**: Full control over which tools to execute and when
+
+```python
+# Provider generates schemas, returns tool calls as data
+response = provider.chat(messages)
+tool_calls = response.tool_calls  # Data only, not executed
+
+# Application decides what to execute
+if should_execute_tools(tool_calls):
+    results = tool_executor.execute_all(tool_calls)
+    messages.extend(results)
+    final_response = provider.chat(messages)
+```
+
+## 🧠 Reasoning Support
+
+Advanced reasoning extraction supports multiple formats:
+
+- **OpenAI o1 Style**: Separate reasoning/content with token counts
+- **Pattern-based**: Extract `<thinking>`, `<reasoning>` tags from content  
+- **Provider Native**: vLLM/Ollama native reasoning_content fields
+- **Streaming**: Real-time reasoning and content separation
+
+```python
+# Enable reasoning extraction
+response = provider.chat(messages, enable_reasoning=True)
+
+# Access reasoning information
+reasoning = response.reasoning_content    # Extracted reasoning
+content = response.content               # Final answer
+tokens = response.reasoning_tokens       # Token usage for reasoning
+
+# Streaming reasoning
+for chunk in provider.chat_stream(messages, enable_reasoning=True):
+    if chunk.reasoning_delta:
+        print(f"Reasoning: {chunk.reasoning_delta}")
+    if chunk.delta:
+        print(f"Response: {chunk.delta}")
+```
+
+## 🏃‍♂️ Running Examples
+
+```bash
+# Basic example
+uv run example.py
+
+# Set custom endpoint
+OPENAI_LIKE_BASE_URL=http://localhost:11434/v1 uv run example.py
+
+# With API key
+OPENAI_LIKE_API_KEY=your-key-here uv run example.py
+```
+
+## 🔧 Supported Providers
+
+### OpenAI-Compatible
+- **vLLM**: High-performance inference server
+- **Ollama**: Local model serving
+- **OpenAI**: Direct OpenAI API
+- **Any OpenAI-compatible endpoint**
+
+### Configuration Examples
+
+```python
+# vLLM
+provider = OpenAILike(
+    model_id="microsoft/DialoGPT-medium",
+    base_url="http://localhost:8000/v1",
+    temperature=0.7,
+    max_tokens=1000,
+    # vLLM-specific
+    top_k=40,
+    repetition_penalty=1.1
+)
+
+# Ollama
+provider = OpenAILike(
+    model_id="qwen3:4b",
+    base_url="http://localhost:11434/v1",
+    api_key="dummy-key",
+    temperature=0.7,
+    # Ollama-specific
+    top_k=40,
+    min_p=0.05
+)
+
+# OpenAI
+provider = OpenAILike(
+    model_id="gpt-4",
+    base_url="https://api.openai.com/v1",
+    api_key="sk-...",
+    temperature=0.7,
+    max_tokens=1000
 )
 ```
 
-### Environment Variables
+## 🔮 Roadmap
 
-```bash
-# Required
-OPENAI_LIKE_BASE_URL=http://localhost:8000/v1
-OPENAI_LIKE_API_KEY=your-api-key
-
-# Optional
-LLM_REQUEST_TIMEOUT=30
-LLM_MAX_TOOL_CALLS=10
-```
-
-## 🔄 Provider Switching
-
-One of the key benefits is easy provider switching:
-
-```python
-# Switch providers without changing your code
-from unified_llm import OpenAILike as Provider
-# from unified_llm import Bedrock as Provider  # Future provider
-
-provider = Provider(model_id="model-name", tools=[my_tool])
-response = provider.chat(messages)  # Same interface!
-```
-
-## 📚 Examples
-
-Run the example script:
-
-```bash
-python example.py
-```
-
-This demonstrates:
-- Basic chat functionality
-- Tool calling with automatic execution
-- Streaming responses
-- Error handling
-
-## 🏗️ Architecture
-
-### Core Components
-
-- **BaseProvider**: Abstract base class for all providers
-- **OpenAILike**: OpenAI-compatible endpoint implementation
-- **ChatResponse/ChatStreamResponse**: Unified response models
-- **Tool Processing**: Automatic function introspection and schema generation
-
-### Message Format
-
-All providers use OpenAI-compatible message format:
-
-```python
-# Basic conversation
-messages = [
-    {"role": "system", "content": "You are a helpful assistant"},
-    {"role": "user", "content": "Hello"},
-    {"role": "assistant", "content": "Hi there!"},
-    {"role": "user", "content": "What's 2+2?"}
-]
-
-# Tool calling conversation (handled automatically by framework)
-messages_with_tools = [
-    {"role": "user", "content": "What's the weather in Paris?"},
-    {
-        "role": "assistant", 
-        "content": "I'll check the weather for you.",
-        "tool_calls": [{"id": "call_123", "name": "get_weather", "arguments": "{\"location\": \"Paris\"}"}]
-    },
-    {"role": "tool", "content": "Weather in Paris: sunny, 22°C", "tool_call_id": "call_123"},
-    {"role": "assistant", "content": "The weather in Paris is sunny and 22°C."}
-]
-```
-
-## 🔧 Adding New Providers
-
-Adding a new provider is straightforward:
-
-```python
-from unified_llm.base import BaseProvider
-from unified_llm.models import ChatResponse, ChatStreamResponse
-
-class NewProvider(BaseProvider):
-    def _prepare_request(self, messages, stream=False):
-        # Convert unified format to provider format
-        return provider_request
-    
-    def _execute_request(self, request):
-        # Make provider API call
-        return provider_response
-    
-    def _parse_response(self, response):
-        # Convert provider response to unified format
-        return ChatResponse(content=text, thinking=thinking)
-    
-    def _construct_tools(self, functions):
-        # Convert functions to provider tool schema
-        return provider_tool_schema
-```
-
-## 🚧 Roadmap
-
-- **AWS Bedrock Provider**: Direct Bedrock Converse API support
-- **Anthropic Provider**: Direct Anthropic API support
-- **Google Vertex AI Provider**: Vertex AI integration
-- **Azure OpenAI Provider**: Azure-specific optimizations
-- **Advanced Features**: Caching, retries, load balancing
+- [ ] AWS Bedrock provider
+- [ ] Google Vertex AI provider
+- [ ] Anthropic Claude provider
+- [ ] Enhanced multimodal support
+- [ ] Performance benchmarking
+- [ ] Advanced tool orchestration patterns
 
 
