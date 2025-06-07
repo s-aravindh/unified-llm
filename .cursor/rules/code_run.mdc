@@ -1,0 +1,7 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+- the entire codebase is managed by uv package management.
+- if you would like to run specific script use uv specific commands to run a file.
