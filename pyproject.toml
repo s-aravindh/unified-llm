@@ -1,0 +1,17 @@
+[project]
+name = "unified-llm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Aravindh", email = "32878238+s-aravindh@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic>=2.0.0",
+    "httpx>=0.24.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
