@@ -2,13 +2,288 @@
 
 # Unified LLM Interface
 
+A **pure interface** library providing a consistent API across different Large Language Model providers, with optional tool execution capabilities.
 
-A unified interface for Large Language Models (LLMs) supporting multiple providers, with tool integration, reasoning extraction, and flexible configuration. **Pure interface design**: providers return tool calls as structured data without automatic execution - applications maintain full control over tool execution and conversation flow.
+## 🎯 Architecture Overview
+
+### Pure Interface Design
+- **Providers**: Handle format translation and return tool calls as **data only**
+- **ToolExecutor**: Optional utility for safe tool execution with comprehensive error handling  
+- **Applications**: Control all tool execution decisions and conversation management
+
+### Tool Call Standardization
+Each provider handles its own tool call standardization internally, converting from provider-native formats to a universal OpenAI-compatible format:
+
+```python
+# Standardized tool call format (used by all providers)
+{
+    "id": "call_abc123",
+    "name": "function_name", 
+    "arguments": "{\"param\": \"value\"}"
+}
+```
+
+This ensures `ToolExecutor` works consistently with any provider without external standardization.
+
+## 🧠 Reasoning Support
+
+Comprehensive reasoning extraction across multiple formats:
+
+### Supported Reasoning Formats
+
+1. **OpenAI o1 Models**: Hidden reasoning with token counts
+2. **vLLM**: Native `reasoning_content` field  
+3. **Pattern-based**: `<think>`, `<reasoning>`, `<analysis>` tags
+4. **Provider-specific**: `thinking` field support
+
+### Reasoning Usage
+
+```python
+# Enable reasoning extraction
+response = provider.chat(messages, enable_reasoning=True)
+
+# Access reasoning content
+if response.reasoning_content:
+    print(f"Reasoning: {response.reasoning_content}")
+
+# Access reasoning token count (OpenAI o1)  
+if response.reasoning_tokens:
+    print(f"Reasoning tokens: {response.reasoning_tokens}")
+
+# Streaming with reasoning
+for chunk in provider.chat_stream(messages, enable_reasoning=True):
+    if chunk.reasoning_delta:
+        print(f"Reasoning: {chunk.reasoning_delta}")
+    
+    if chunk.delta:
+        print(chunk.delta, end="")
+    
+    if chunk.is_reasoning_complete:
+        print("\n✅ Reasoning complete!")
+```
+
+### Reasoning Patterns Detected
+
+```python
+# These patterns are automatically extracted:
+"<think>Step 1: Analyze the problem...</think>"
+"<reasoning>First, I need to...</reasoning>" 
+"<analysis>The key insight is...</analysis>"
+
+# Provider-specific formats:
+{"reasoning_content": "My thought process..."}  # vLLM
+{"thinking": "Let me think..."}                 # Some providers
+```
+
+## 🚀 Quick Start
+
+```python
+from unified_llm import OpenAILike, ToolExecutor
+
+# Define your tools
+def calculate(expression: str) -> float:
+    """Calculate a mathematical expression."""
+    return eval(expression)  # Use proper math parser in production
+
+def get_weather(location: str) -> str:
+    """Get weather for a location."""
+    return f"Sunny, 22°C in {location}"
+
+# Initialize provider (handles standardization internally)
+provider = OpenAILike(
+    model_id="gpt-4o-mini",
+    tools=[calculate, get_weather],  # For schema generation only
+    temperature=0.7,
+    api_key="your-api-key"
+)
+
+# Initialize optional tool executor  
+executor = ToolExecutor(tools=[calculate, get_weather])
+
+# Chat with pure interface
+messages = [{"role": "user", "content": "What's 25 * 4? Also, weather in Tokyo?"}]
+response = provider.chat(messages)
+
+print(f"Assistant: {response.content}")
+
+# Tool calls returned as data (provider handles standardization internally)
+if response.tool_calls:
+    print(f"Tool calls: {len(response.tool_calls)}")
+    
+    # Execute tools (application's choice)
+    tool_results = []
+    for tool_call in response.tool_calls:
+        result = executor.execute_tool(tool_call)  # Works with any provider
+        tool_results.append(result)
+        print(f"Tool result: {result['content']}")
+    
+    # Continue conversation
+    messages.extend([
+        {"role": "assistant", "content": response.content, "tool_calls": response.tool_calls},
+        *tool_results
+    ])
+    
+    final_response = provider.chat(messages)
+    print(f"Final: {final_response.content}")
+```
+
+## 🔧 Provider-Specific Standardization
+
+### OpenAI-Compatible Provider
+Handles multiple OpenAI formats internally:
+
+```python
+# OpenAI Provider automatically standardizes these formats:
+
+# 1. Full OpenAI format
+{
+    "id": "call_abc123",
+    "type": "function",
+    "function": {
+        "name": "calculate",
+        "arguments": "{\"expression\": \"25 * 4\"}"
+    }
+}
+
+# 2. Simplified format (pass-through)
+{
+    "id": "call_abc123", 
+    "name": "calculate",
+    "arguments": "{\"expression\": \"25 * 4\"}"
+}
+
+# Both become standardized format internally
+```
+
+### Future Providers
+Each new provider will implement its own `_standardize_tool_calls()` method:
+
+```python
+class BedrockProvider(BaseProvider):
+    def _standardize_tool_calls(self, raw_tool_calls):
+        """Convert Bedrock format to standardized format."""
+        # Provider-specific standardization logic
+        pass
+```
+
+## 📦 Installation
+
+```bash
+pip install -e .
+```
+
+## 🛠️ Configuration
+
+### OpenAI-Compatible Endpoints
+
+```python
+# Official OpenAI API
+provider = OpenAILike(
+    model_id="gpt-4o-mini",
+    api_key="sk-your-key",
+    temperature=0.7
+)
+
+# Local vLLM server
+provider = OpenAILike(
+    model_id="llama-3.1-8b",
+    base_url="http://localhost:8000/v1",
+    api_key="fake",
+    temperature=0.8,
+    top_k=40  # vLLM-specific parameter
+)
+
+# Ollama with OpenAI compatibility
+provider = OpenAILike(
+    model_id="qwen3:4b",
+    base_url="http://localhost:11434/v1", 
+    api_key="fake",
+    temperature=0.7
+)
+```
+
+## 🔄 Streaming Support
+
+```python
+for chunk in provider.chat_stream(messages):
+    if chunk.delta:
+        print(chunk.delta, end="", flush=True)
+    
+    # Tool calls in streaming (standardized automatically)
+    if chunk.tool_calls:
+        print(f"\nTool calls: {chunk.tool_calls}")
+    
+    if chunk.is_complete:
+        break
+```
+
+## 🛡️ Error Handling
+
+```python
+from unified_llm import ProviderError, ToolExecutionError
+
+try:
+    response = provider.chat(messages)
+    
+    if response.tool_calls:
+        for tool_call in response.tool_calls:
+            try:
+                result = executor.execute_tool(tool_call)
+            except ToolExecutionError as e:
+                print(f"Tool execution failed: {e}")
+                # Handle gracefully
+                
+except ProviderError as e:
+    print(f"Provider error: {e}")
+```
+
+## 🧪 Testing
+
+```bash
+# Run tests
+uv run python -m pytest tests/ -v
+
+# Test specific functionality
+uv run python -m pytest tests/test_openai_like.py -v
+```
+
+## 🏗️ Key Benefits
+
+1. **Scalable Architecture**: Each provider handles its own standardization - no central bottleneck
+2. **Provider Isolation**: Standardization logic stays with the provider that understands the format
+3. **Consistent Interface**: All providers return identical tool call format
+4. **Universal Compatibility**: ToolExecutor works with any provider automatically
+5. **Maintainable**: Adding new providers doesn't affect existing code
+6. **Comprehensive Reasoning**: Supports multiple reasoning formats across providers
+
+## 📋 Roadmap
+
+- [x] OpenAI-compatible provider with internal standardization
+- [x] Pure interface design
+- [x] Comprehensive tool execution
+- [x] Multi-format reasoning support
+- [ ] AWS Bedrock provider
+- [ ] Anthropic Claude provider  
+- [ ] Google Vertex AI provider
+- [ ] Async support
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create your feature branch
+3. Add provider-specific standardization in the provider class
+4. Add tests verifying standardization works correctly
+5. Submit a pull request
+
+## 📄 License
+
+MIT License - see LICENSE file for details.
 
 ## 🌟 Key Features
 
 - **Multi-Provider Support**: OpenAI-compatible endpoints (vLLM, Ollama, etc.), with extensible architecture for AWS Bedrock and others
 - **Pure Interface Design**: Tool calls returned as data, no automatic execution - applications control everything
+- **Standardized Tool Format**: Consistent tool call structure across all providers for seamless ToolExecutor compatibility
 - **Comprehensive Tool Integration**: Optional ToolExecutor utility for safe tool execution with error handling
 - **Advanced Reasoning Support**: Extract reasoning content from provider responses (e.g., OpenAI o1, pattern-based extraction)
 - **Flexible Configuration**: Constructor-only parameters with automatic common/provider-specific separation
@@ -25,93 +300,50 @@ Providers are **pure interfaces** that translate between formats and return stru
 - Make tool execution decisions
 
 ### 2. Separation of Concerns
-- **Providers**: Format translation, API communication, schema generation
+- **Providers**: Format translation, API communication, schema generation, **tool call standardization**
 - **ToolExecutor**: Optional safe tool execution with error handling
 - **Applications**: Conversation management, tool execution decisions, orchestration
 
 ### 3. Constructor-Only Configuration
 All parameters (common and provider-specific) are set once during initialization, eliminating runtime parameter confusion.
 
-## 🚀 Quick Start
-
-### Basic Installation
-
-```bash
-pip install unified-llm
-```
-
-### Development Installation
-
-```bash
-git clone <repository-url>
-cd unified-llm
-uv sync --dev
-```
-
-### Basic Usage
-
+### 4. Standardized Tool Format
+All providers return tool calls in a consistent format:
 ```python
-from unified_llm import OpenAILike, ToolExecutor
-
-# Define tools
-def get_weather(location: str) -> str:
-    """Get weather for a location."""
-    return f"Weather in {location}: sunny, 22°C"
-
-def calculate(expression: str) -> float:
-    """Calculate mathematical expression."""
-    return eval(expression)
-
-# Initialize provider (pure interface)
-provider = OpenAILike(
-    model_id="qwen3:4b",
-    base_url="http://localhost:11434/v1",
-    api_key="dummy-key",
-    tools=[get_weather, calculate],  # For schema generation only
-    temperature=0.7,
-    max_tokens=1000
-)
-
-# Initialize tool executor (optional utility)
-tool_executor = ToolExecutor(tools=[get_weather, calculate])
-
-# Chat with pure interface
-messages = [
-    {"role": "user", "content": "What's the weather in Tokyo and what's 5*7?"}
-]
-
-response = provider.chat(messages)
-print(f"Assistant: {response.content}")
-
-# Application controls tool execution
-if response.tool_calls:
-    print(f"Tool calls requested: {len(response.tool_calls)}")
-    
-    # Add assistant message
-    messages.append({
-        "role": "assistant",
-        "content": response.content,
-        "tool_calls": response.tool_calls
-    })
-    
-    # Execute tools (application decision)
-    for tool_call in response.tool_calls:
-        result = tool_executor.execute(tool_call)
-        print(f"Executed {tool_call['name']}: {result}")
-        
-        # Add tool result
-        messages.append({
-            "role": "tool",
-            "content": result,
-            "tool_call_id": tool_call["id"]
-        })
-    
-    # Continue conversation
-    final_response = provider.chat(messages)
-    print(f"Final response: {final_response.content}")
+{
+    "id": "call_abc123",      # Unique identifier
+    "name": "function_name",  # Function to call
+    "arguments": "{...}"      # JSON string of arguments
+}
 ```
 
 ## 📚 Advanced Usage
+
+### Standardized Tool Call Format
+
+All providers return tool calls in the same format regardless of their native format:
+
+```python
+# OpenAI native format (internal):
+{
+    "id": "call_abc123",
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "arguments": "{\"location\": \"Tokyo\"}"
+    }
+}
+
+# Unified standardized format (what you get):
+{
+    "id": "call_abc123",
+    "name": "get_weather", 
+    "arguments": "{\"location\": \"Tokyo\"}"
+}
+
+# Works with ToolExecutor from any provider!
+result = tool_executor.execute(tool_call)  # Always works
+```
 
 ### Tool Call Validation
 
@@ -170,8 +402,9 @@ for chunk in provider.chat_stream(messages):
     if chunk.delta:
         print(chunk.delta, end="", flush=True)
     
-    # Tool calls in streaming (final chunk)
+    # Tool calls in streaming (standardized format)
     if chunk.tool_calls:
+        print(f"\nTool calls: {chunk.tool_calls}")
         # Handle tool calls...
         pass
     
@@ -232,19 +465,44 @@ The interface supports flexible tool integration through:
 
 1. **Schema Generation**: Tools provided to providers for OpenAI-compatible schema generation
 2. **Pure Interface**: Tool calls returned as structured data, not executed
-3. **Optional Execution**: ToolExecutor utility for safe execution when needed
-4. **Application Control**: Full control over which tools to execute and when
+3. **Format Standardization**: Consistent tool call format across all providers
+4. **Optional Execution**: ToolExecutor utility for safe execution when needed
+5. **Application Control**: Full control over which tools to execute and when
 
 ```python
-# Provider generates schemas, returns tool calls as data
+# Provider generates schemas, returns standardized tool calls as data
 response = provider.chat(messages)
-tool_calls = response.tool_calls  # Data only, not executed
+tool_calls = response.tool_calls  # Standardized format, never executed
 
 # Application decides what to execute
 if should_execute_tools(tool_calls):
-    results = tool_executor.execute_all(tool_calls)
+    results = tool_executor.execute_all(tool_calls)  # Works with any provider
     messages.extend(results)
     final_response = provider.chat(messages)
+```
+
+### Tool Call Format Standardization
+
+```python
+# Different providers, same format for applications:
+
+# vLLM/Ollama → Standardized
+# OpenAI → Standardized  
+# Bedrock → Standardized (future)
+# All work with the same ToolExecutor!
+
+for provider_type in ["vllm", "openai", "bedrock"]:
+    provider = get_provider(provider_type)
+    response = provider.chat(messages)
+    
+    # Same tool call format from all providers
+    for tool_call in response.tool_calls:
+        assert "id" in tool_call
+        assert "name" in tool_call  
+        assert "arguments" in tool_call
+        
+        # Same ToolExecutor works with all
+        result = tool_executor.execute(tool_call)
 ```
 
 ## 🧠 Reasoning Support

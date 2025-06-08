@@ -14,6 +14,16 @@ class BaseProvider(ABC):
     Pure interface design: Providers handle format translation and return tool calls
     as data. They do NOT execute tools automatically. Applications control all tool
     execution and conversation flow.
+    
+    Tool Call Standardization: All providers must return tool calls in OpenAI-compatible
+    standardized format. Each provider implements its own standardization logic.
+    
+    Standard format:
+    {
+        "id": "call_abc123",
+        "name": "function_name", 
+        "arguments": "{\"param\": \"value\"}"
+    }
     """
     
     def __init__(self, model_id: str, tools: Optional[List[Callable]] = None, **kwargs):
@@ -51,6 +61,47 @@ class BaseProvider(ABC):
             # Store tool and schema for provider schema generation
             self.tools_by_name[tool_name] = tool
             self.tool_schemas[tool_name] = schema
+    
+    @abstractmethod
+    def _standardize_tool_calls(self, raw_tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Standardize provider-native tool calls to OpenAI-compatible format.
+        
+        Each provider must implement this method to convert from their native
+        tool call format to the standardized format. This ensures ToolExecutor
+        works consistently across all providers.
+        
+        Standard format:
+        {
+            "id": "call_abc123",
+            "name": "function_name",
+            "arguments": "{\"param\": \"value\"}"
+        }
+        
+        Args:
+            raw_tool_calls: Tool calls in provider-native format
+            
+        Returns:
+            Tool calls in standardized OpenAI-compatible format
+            
+        Example:
+            # OpenAI provider converts from:
+            {
+                "id": "call_abc123",
+                "type": "function",
+                "function": {
+                    "name": "calculate",
+                    "arguments": "{\"expression\": \"25 * 4\"}"
+                }
+            }
+            
+            # To standardized format:
+            {
+                "id": "call_abc123", 
+                "name": "calculate",
+                "arguments": "{\"expression\": \"25 * 4\"}"
+            }
+        """
+        pass
     
     def chat(self, messages: List[Dict[str, Any]], enable_reasoning: bool = False) -> ChatResponse:
         """Synchronous chat completion with optional reasoning.
@@ -157,12 +208,15 @@ class BaseProvider(ABC):
     def _parse_response(self, response: Dict[str, Any], enable_reasoning: bool = False) -> ChatResponse:
         """Convert provider response to unified format.
         
+        This method must extract tool calls and standardize them using
+        _standardize_tool_calls() to ensure consistent format.
+        
         Args:
             response: Provider-specific response
             enable_reasoning: Whether reasoning is enabled
             
         Returns:
-            ChatResponse in unified format with tool_calls as data
+            ChatResponse in unified format with tool_calls as standardized data
         """
         pass
     
@@ -170,12 +224,15 @@ class BaseProvider(ABC):
     def _parse_stream_response(self, chunk: Dict[str, Any], enable_reasoning: bool = False) -> ChatStreamResponse:
         """Convert provider stream chunk to unified format.
         
+        This method must extract tool calls and standardize them using
+        _standardize_tool_calls() to ensure consistent format.
+        
         Args:
             chunk: Provider-specific response chunk
             enable_reasoning: Whether reasoning is enabled
             
         Returns:
-            ChatStreamResponse in unified format with tool_calls as data
+            ChatStreamResponse in unified format with tool_calls as standardized data
         """
         pass
     

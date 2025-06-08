@@ -13,7 +13,14 @@ from .utils import extract_function_schema
 
 
 class OpenAILike(BaseProvider):
-    """Provider for OpenAI-compatible endpoints (vLLM, Ollama, etc.)."""
+    """Provider for OpenAI-compatible endpoints (OpenAI, vLLM, Ollama, etc.).
+    
+    Supports both official OpenAI API and any compatible endpoints like:
+    - vLLM server
+    - Ollama with OpenAI compatibility
+    - LocalAI
+    - text-generation-webui with OpenAI extension
+    """
     
     # Common parameters supported across OpenAI-compatible providers
     COMMON_PARAMS = {
@@ -58,6 +65,9 @@ class OpenAILike(BaseProvider):
         self.common_params.setdefault('temperature', 0.7)
         self.common_params.setdefault('max_tokens', 1000)
         
+        # Initialize streaming reasoning state
+        self._in_reasoning_mode = False
+        
         # Call parent constructor with all parameters
         super().__init__(model_id, tools, **kwargs)
         
@@ -98,6 +108,54 @@ class OpenAILike(BaseProvider):
                 )
         except httpx.RequestError as e:
             raise ConfigurationError(f"Cannot connect to OpenAI-like endpoint at {self.base_url}: {e}")
+    
+    def _standardize_tool_calls(self, raw_tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Standardize OpenAI tool calls to consistent format.
+        
+        OpenAI API returns tool calls in this format:
+        {
+            "id": "call_abc123",
+            "type": "function",
+            "function": {
+                "name": "calculate",
+                "arguments": "{\"expression\": \"25 * 4\"}"
+            }
+        }
+        
+        We standardize to:
+        {
+            "id": "call_abc123",
+            "name": "calculate", 
+            "arguments": "{\"expression\": \"25 * 4\"}"
+        }
+        
+        Args:
+            raw_tool_calls: Tool calls from OpenAI API
+            
+        Returns:
+            Standardized tool call format
+        """
+        if not raw_tool_calls:
+            return []
+        
+        standardized = []
+        for tool_call in raw_tool_calls:
+            if isinstance(tool_call, dict):
+                if "function" in tool_call:
+                    # Full OpenAI format - convert to standardized
+                    standardized.append({
+                        "id": tool_call["id"],
+                        "name": tool_call["function"]["name"],
+                        "arguments": tool_call["function"]["arguments"]
+                    })
+                else:
+                    # Already standardized format - pass through
+                    standardized.append(tool_call)
+            else:
+                # Handle potential non-dict formats
+                standardized.append(tool_call)
+        
+        return standardized
     
     def _prepare_request(self, messages: List[Dict[str, Any]], stream: bool = False, enable_reasoning: bool = False) -> Dict[str, Any]:
         """Convert unified format to OpenAI-compatible format.
@@ -199,15 +257,14 @@ class OpenAILike(BaseProvider):
             OpenAI-compatible response chunks
             
         Raises:
-            ProviderError: If API call fails
+            ProviderError: If streaming API call fails
         """
         try:
             with self.client.stream(
-                "POST",
+                'POST',
                 f"{self.base_url}/chat/completions",
                 json=request
             ) as response:
-                
                 if response.status_code != 200:
                     error_detail = response.text
                     try:
@@ -222,29 +279,34 @@ class OpenAILike(BaseProvider):
                         status_code=response.status_code
                     )
                 
+                # Process streaming response
                 for line in response.iter_lines():
                     if line:
-                        line_str = line.strip()
-                        if line_str.startswith('data: '):
-                            data = line_str[6:]  # Remove 'data: ' prefix
-                            if data.strip() == '[DONE]':
+                        # Handle both bytes and string cases
+                        if isinstance(line, bytes):
+                            line = line.decode('utf-8')
+                        
+                        if line.startswith('data: '):
+                            data = line[6:]  # Remove 'data: ' prefix
+                            if data == '[DONE]':
                                 break
                             try:
                                 chunk = json.loads(data)
                                 yield chunk
                             except json.JSONDecodeError:
                                 continue
-                            
+                                
         except httpx.RequestError as e:
             raise ProviderError(f"Streaming request failed: {e}", provider="openai_like")
     
     def _extract_reasoning_content(self, response: Dict[str, Any]) -> Tuple[str, Optional[str]]:
-        """Extract content and reasoning from provider response.
+        """Extract content and reasoning from OpenAI-compatible response.
         
-        For OpenAI-like providers, this handles multiple reasoning formats:
+        Handles multiple reasoning formats:
         1. Native reasoning_content field (vLLM)
         2. Pattern-based extraction from content (<think>, <reasoning> tags)
         3. OpenAI o1-style reasoning tokens in usage
+        4. Thinking field (some providers)
         
         Args:
             response: Provider-specific response
@@ -280,6 +342,7 @@ class OpenAILike(BaseProvider):
             (r'<think>(.*?)</think>', re.DOTALL),
             (r'<thinking>(.*?)</thinking>', re.DOTALL), 
             (r'<reasoning>(.*?)</reasoning>', re.DOTALL),
+            (r'<analysis>(.*?)</analysis>', re.DOTALL),
         ]
         
         for pattern, flags in patterns:
@@ -297,110 +360,83 @@ class OpenAILike(BaseProvider):
         
         if reasoning_tokens and reasoning_tokens > 0:
             # For OpenAI o1, reasoning is hidden, so we return None for reasoning_content
-            # but note the token count
+            # but note the token count in metadata
             return full_content, None
         
         # No reasoning found
         return full_content, None
     
     def _parse_response(self, response: Dict[str, Any], enable_reasoning: bool = False) -> ChatResponse:
-        """Convert OpenAI-compatible response to unified format.
+        """Parse OpenAI API response to unified format.
         
         Args:
             response: OpenAI-compatible response
             enable_reasoning: Whether reasoning is enabled
             
         Returns:
-            ChatResponse in unified format
+            ChatResponse in unified format with standardized tool calls
         """
-        if 'choices' not in response or not response['choices']:
-            raise ProviderError("Invalid response format: missing choices", provider="openai_like")
+        # Extract main content
+        message = response["choices"][0]["message"]
+        content = message.get("content") or ""
         
-        choice = response['choices'][0]
-        message = choice.get('message', {})
+        # Extract tool calls and standardize them internally
+        raw_tool_calls = message.get("tool_calls")
+        standardized_tool_calls = self._standardize_tool_calls(raw_tool_calls or [])
         
-        # Extract content and reasoning
-        if enable_reasoning:
-            content, reasoning_content = self._extract_reasoning_content(response)
-        else:
-            content = message.get('content', '')
-            reasoning_content = None
-        
-        # Get tool calls
-        tool_calls = message.get('tool_calls', [])
-        
-        # Get reasoning token count if available
+        # Handle reasoning content extraction
+        reasoning_content = None
         reasoning_tokens = None
+        
         if enable_reasoning:
+            content, reasoning_content = self._extract_reasoning_content(response)            
+            # Extract reasoning token count if available (OpenAI o1)
             usage = response.get('usage', {})
             completion_tokens_details = usage.get('completion_tokens_details', {})
             reasoning_tokens = completion_tokens_details.get('reasoning_tokens')
         
-        # Build metadata with provider-specific information
-        metadata = {}
+        # Build metadata
+        metadata = {
+            "model": response.get("model"),
+            "usage": response.get("usage", {}),
+            "finish_reason": response["choices"][0].get("finish_reason"),
+            "system_fingerprint": response.get("system_fingerprint"),
+            "provider": "openai_like",
+            "endpoint": getattr(self, 'base_url', 'unknown')
+        }
         
-        # Usage information
-        if 'usage' in response:
-            metadata['usage'] = response['usage']
-        
-        # Model information
-        if 'model' in response:
-            metadata['model'] = response['model']
-        
-        # Response metadata
-        if 'id' in response:
-            metadata['response_id'] = response['id']
-        
-        if 'created' in response:
-            metadata['created'] = response['created']
-        
-        # Choice metadata
-        if 'finish_reason' in choice:
-            metadata['finish_reason'] = choice['finish_reason']
-        
-        if 'index' in choice:
-            metadata['choice_index'] = choice['index']
-        
-        # System fingerprint (for OpenAI compatibility)
-        if 'system_fingerprint' in response:
-            metadata['system_fingerprint'] = response['system_fingerprint']
-        
-        # Provider identifier and configuration used
-        metadata['provider'] = 'openai_like'
-        metadata['endpoint'] = self.base_url
-        metadata['common_params'] = self.common_params.copy()
-        metadata['provider_params'] = self.provider_params.copy()
-        
-        chat_response = ChatResponse(
-            content=content, 
+        return ChatResponse(
+            content=content,
             reasoning_content=reasoning_content,
             reasoning_tokens=reasoning_tokens,
+            tool_calls=standardized_tool_calls if standardized_tool_calls else None,
             metadata=metadata
         )
-        
-        # Add tool calls if present
-        if tool_calls:
-            chat_response.tool_calls = tool_calls
-        
-        return chat_response
     
     def _parse_stream_response(self, chunk: Dict[str, Any], enable_reasoning: bool = False) -> ChatStreamResponse:
-        """Convert OpenAI-compatible stream response chunk to unified format.
+        """Parse OpenAI streaming response chunk to unified format.
         
         Args:
             chunk: OpenAI-compatible response chunk
             enable_reasoning: Whether reasoning is enabled
             
         Returns:
-            ChatStreamResponse in unified format
+            ChatStreamResponse in unified format with standardized tool calls
         """
-        if 'choices' not in chunk or not chunk['choices']:
-            return ChatStreamResponse(delta="", is_complete=False)
+        if not chunk.get("choices"):
+            return ChatStreamResponse(delta="", metadata={"raw_chunk": chunk})
         
-        choice = chunk['choices'][0]
-        delta = choice.get('delta', {})
+        choice = chunk["choices"][0]
+        delta = choice.get("delta", {})
         
-        content_delta = delta.get('content', '') or ''
+        # Extract content delta
+        content_delta = delta.get("content") or ""
+        
+        # Extract tool calls and standardize them internally
+        raw_tool_calls = delta.get("tool_calls")
+        standardized_tool_calls = self._standardize_tool_calls(raw_tool_calls or [])
+        
+        # Handle reasoning in streaming
         reasoning_delta = None
         is_reasoning_complete = False
         
@@ -412,81 +448,69 @@ class OpenAILike(BaseProvider):
             if reasoning_delta is None:
                 reasoning_delta = delta.get('thinking')
             
-            # For pattern-based reasoning, we need to track state
-            # This is simplified - in practice, you might need more sophisticated tracking
+            # For pattern-based reasoning, detect start/end transitions
             if content_delta and reasoning_delta is None:
-                # Check if we're transitioning from reasoning to content
                 full_delta = content_delta
-                if '</think>' in full_delta or '</thinking>' in full_delta or '</reasoning>' in full_delta:
+                
+                # Check for reasoning START (opening tags)
+                opening_tags = ['<think>', '<thinking>', '<reasoning>', '<analysis>']
+                if any(tag in full_delta for tag in opening_tags):
+                    self._in_reasoning_mode = True
+                    print(f"🧠 Reasoning started detected in chunk")  # Debug
+                
+                # Check for reasoning END (closing tags)
+                closing_tags = ['</think>', '</thinking>', '</reasoning>', '</analysis>']
+                if any(tag in full_delta for tag in closing_tags):
+                    self._in_reasoning_mode = False
                     is_reasoning_complete = True
-                    # Extract reasoning and content from delta
-                    patterns = [
-                        (r'<think>(.*?)</think>', re.DOTALL),
-                        (r'<thinking>(.*?)</thinking>', re.DOTALL), 
-                        (r'<reasoning>(.*?)</reasoning>', re.DOTALL),
-                    ]
-                    
-                    for pattern, flags in patterns:
-                        if re.search(pattern, full_delta, flags):
-                            match = re.search(pattern, full_delta, flags)
-                            if match:
-                                reasoning_delta = match.group(1).strip()
-                                content_delta = re.sub(pattern, '', full_delta, flags=flags).strip()
-                                break
+                    print(f"✅ Reasoning completed detected in chunk")  # Debug
+                
+                # Route content based on current reasoning state
+                if self._in_reasoning_mode:
+                    # We're in reasoning mode - this delta is reasoning content
+                    reasoning_delta = content_delta
+                    content_delta = ""  # Don't emit as content
+                else:
+                    # We're in normal mode - emit as regular content
+                    # content_delta remains as-is
+                    pass
         
         # Check if stream is complete
-        finish_reason = choice.get('finish_reason')
-        is_complete = finish_reason is not None
+        is_complete = choice.get("finish_reason") is not None
         
-        # Build metadata for stream chunk
-        metadata = {}
+        # Build metadata
+        metadata = {
+            "model": chunk.get("model"),
+            "finish_reason": choice.get("finish_reason"),
+            "raw_chunk": chunk,
+            "provider": "openai_like"
+        }
         
-        # Chunk identification
-        if 'id' in chunk:
-            metadata['chunk_id'] = chunk['id']
-        
-        if 'created' in chunk:
-            metadata['created'] = chunk['created']
-        
-        # Model information
-        if 'model' in chunk:
-            metadata['model'] = chunk['model']
-        
-        # Choice metadata
-        if 'index' in choice:
-            metadata['choice_index'] = choice['index']
-        
-        if finish_reason:
-            metadata['finish_reason'] = finish_reason
-        
-        # Usage information (usually only in final chunk)
+        # Add usage information if available (usually only in final chunk)
         if 'usage' in chunk:
             metadata['usage'] = chunk['usage']
-        
-        # Provider information
-        metadata['provider'] = 'openai_like'
-        metadata['endpoint'] = self.base_url
         
         return ChatStreamResponse(
             delta=content_delta,
             reasoning_delta=reasoning_delta,
             is_reasoning_complete=is_reasoning_complete,
             is_complete=is_complete,
+            tool_calls=standardized_tool_calls if standardized_tool_calls else None,
             metadata=metadata
         )
     
     def _construct_tools(self, functions: List[Callable]) -> List[Dict[str, Any]]:
-        """Convert functions to OpenAI-compatible tool format.
+        """Convert functions to OpenAI tool schema.
         
         Args:
             functions: List of Python functions
             
         Returns:
-            OpenAI-compatible tool schema list
+            OpenAI-compatible tool schema for API requests
         """
         tools = []
         for func in functions:
-            schema = extract_function_schema(func)
+            schema = self.tool_schemas[func.__name__]
             
             tool = {
                 'type': 'function',
