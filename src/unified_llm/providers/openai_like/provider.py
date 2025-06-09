@@ -6,10 +6,10 @@ import uuid
 import re
 from typing import Dict, List, Any, Iterator, Optional, Callable, Tuple
 import httpx
-from .base import BaseProvider
-from .models import ChatResponse, ChatStreamResponse
-from .exceptions import ProviderError, ConfigurationError
-from .utils import extract_function_schema
+from ...base import BaseProvider
+from ...models import ChatResponse, ChatStreamResponse
+from ...exceptions import ProviderError, ConfigurationError
+from ...utils import extract_function_schema
 
 
 class OpenAILike(BaseProvider):
