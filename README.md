@@ -1,4 +1,4 @@
-![Work In Progress](https://img.shields.io/badge/status-🚧%20WIP-orange)
+> use litellm it has better support and better api
 
 # Unified LLM Interface
 
